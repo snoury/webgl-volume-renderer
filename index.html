@@ -1,0 +1,225 @@
+<html>
+  <head>
+    <title>WebGL volume rendering</title>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.1.1/css/bootstrap.min.css">
+    <script src="http://netdna.bootstrapcdn.com/bootstrap/3.1.1/js/bootstrap.min.js"></script>
+    <script src="js/three.min.js"></script>
+    <script src="js/three.trackballcontrols.js"></script>
+  </head>
+  <body>
+    <script id="vertexShader" type="x-shader/x-vertex">
+    varying vec3 vcoord;
+
+    void main(void) {
+      vcoord = position;
+      gl_Position = (projectionMatrix * modelViewMatrix * vec4(position, 1.0));
+    }
+    </script>
+
+    <script id="fragmentShaderPass1" type="x-shader/x-fragment">
+    varying vec3 vcoord;
+
+    void main() {
+      gl_FragColor = vec4(vcoord * vec3(1.0, 1.0/3.0, 1.0) + vec3(0.5, 0.5, 0.5), 1.0);
+    }
+    </script>
+
+    <script id="fragmentShaderPass2" type="x-shader/x-fragment">
+    #define ray_steps 64
+    #define light_steps 32
+
+    varying vec3 vcoord;
+
+    uniform float smokeSize;
+    uniform vec2 resolution;
+    uniform sampler2D smokeVolumeTex;
+    uniform sampler2D previousPassTex;
+
+    void main(void) {
+      float ambient_light_coef = 0.125;
+      vec3 light_position = vec3(1.0, 0.5, 1.0);
+
+      vec2 texCoord = gl_FragCoord.xy / resolution;
+      vec3 eye_ray_entry = vcoord * vec3(1.0, 1.0/3.0, 1.0) + vec3(0.5, 0.5, 0.5);
+      vec3 eye_ray_exit = texture2D(previousPassTex, texCoord).rgb;
+      vec3 eye_ray_vec = (eye_ray_exit - eye_ray_entry);
+
+      float eye_ray_length = length(eye_ray_vec);
+      float rstep = 1.732 / float(ray_steps);
+      float lstep = 1.732 / float(light_steps);
+      vec3 eye_ray_stepvec = ((eye_ray_vec * rstep) / eye_ray_length);
+      vec4 final_color = vec4(0.0, 0.0, 0.0, 0.0);
+      vec3 eye_ray_position = eye_ray_entry;
+      for (int step = 0; step < ray_steps; ++step) {
+        vec2 tc1, tc2;
+        tc1.y = tc2.y = eye_ray_position.y;
+        tc1.x = (floor(eye_ray_position.z * smokeSize) + eye_ray_position.x) / smokeSize;
+        tc2.x = ( ceil(eye_ray_position.z * smokeSize) + eye_ray_position.x) / smokeSize;
+        float tcmix = fract(eye_ray_position.z * smokeSize);
+        vec4 sample_color = mix(texture2D(smokeVolumeTex, tc1), texture2D(smokeVolumeTex, tc2), tcmix);
+        sample_color.a *= 0.125;
+        sample_color.rgb *= sample_color.a;
+        //sample_color.rgb = sample_color.aaa;
+
+        /*
+        // begin lighting
+        vec3  light_ray_exit    = light_position;
+        vec3  light_ray_entry   = eye_ray_position;
+        vec3  light_ray_vec     = light_ray_exit - light_ray_entry;
+        float light_ray_length  = length(light_ray_vec);
+        vec3  light_ray_stepvec = light_ray_vec * lstep / light_ray_length;
+
+        float light_coef        = 1.0;
+        vec3 light_ray_position = light_ray_entry;
+
+        for (int j = 0; j < light_steps; ++j) {
+          light_ray_position += light_ray_stepvec;
+          if (!(light_coef > 0.0 && float(j)*lstep < light_ray_length)) break;
+
+          vec2 ltc1, ltc2;
+          ltc1.y = ltc2.y = light_ray_position.y;
+          ltc1.x = (floor(light_ray_position.z * smokeSize) + light_ray_position.x) / smokeSize;
+          ltc2.x = ( ceil(light_ray_position.z * smokeSize) + light_ray_position.x) / smokeSize;
+          float ltcmix = fract(light_ray_position.z * smokeSize);
+          light_coef -= mix(texture2D(smokeVolumeTex, ltc1), texture2D(smokeVolumeTex, ltc2), ltcmix).a * 0.125;
+        }
+
+        sample_color.rgb *= max(light_coef, ambient_light_coef);
+        // end lighting
+        */
+
+        final_color += ((1.0 - final_color.a) * sample_color);
+        if (((final_color.a > 1.0) || ((float(step) * rstep) > eye_ray_length))) break;
+        eye_ray_position += eye_ray_stepvec;
+      }
+
+      gl_FragColor = final_color;
+    }
+    </script>
+
+    <script>
+    var _camera, _volume;
+    var _renderer, _scene;
+    var _pass1, _pass2, _pass3;
+    var _clock = new THREE.Clock();
+    var _controls;
+
+    init();
+    animate();
+
+    function animate() {
+      _controls.update(_clock.getDelta());
+      requestAnimationFrame(animate);
+      render();
+    }
+
+    function render() {
+      _pass2.shader.uniforms.smokeSize.value = _volume.image.height / 3;
+      _renderer.render(_pass1.scene, _camera, _pass1.renderTarget);
+      _renderer.render(_pass2.scene, _camera, _pass2.renderTarget);
+      _renderer.render(_pass3.scene, _pass3.camera);
+    }
+
+    function init() {
+      _renderer = new THREE.WebGLRenderer({ clearColor: 0x336699 });
+      _renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(_renderer.domElement);
+
+      _camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 100);
+      _camera.position.z = 4.0;
+
+      _controls = new THREE.TrackballControls(_camera);
+      _controls.rotateSpeed = 1.0;
+      _controls.zoomSpeed = 1.2;
+      _controls.panSpeed = 0.8;
+      _controls.noZoom = false;
+      _controls.noPan = false;
+
+      _volume = THREE.ImageUtils.loadTexture('volume.png', new THREE.UVMapping());
+
+      _pass1 = (function(params) {
+        var mesh = new THREE.Mesh(
+          new THREE.CubeGeometry(1.0, 3.0, 1.0),
+          new THREE.ShaderMaterial({
+            vertexShader: params.vertexShader,
+            fragmentShader: params.fragmentShader,
+            side: THREE.BackSide }));
+
+        var scene = new THREE.Scene();
+        scene.add(mesh);
+
+        var renderTarget = new THREE.WebGLRenderTarget(
+          params.rtSize.width, params.rtSize.height, {
+            minFilter: THREE.LinearFilter,
+            depthBuffer: false,
+            stencilBuffer: false });
+
+        return { scene: scene, renderTarget: renderTarget };
+      })({
+        camera: _camera,
+        rtSize: { width: window.innerWidth/2, height: window.innerHeight/2 },
+        vertexShader: document.getElementById('vertexShader').textContent,
+        fragmentShader: document.getElementById('fragmentShaderPass1').textContent
+      });
+
+      _pass2 = (function(params) {
+        var shader = new THREE.ShaderMaterial({
+          uniforms: {
+            smokeVolumeTex: { type: 't', value: params.volumeTexture },
+            previousPassTex: { type: 't', value: params.previousRenderTarget },
+            resolution: { type: 'v2', value: new THREE.Vector2(params.rtSize.width, params.rtSize.height) },
+            smokeSize: { type: 'f', value: 1.0 },
+          },
+          vertexShader: params.vertexShader,
+          fragmentShader: params.fragmentShader,
+          side: THREE.FrontSide });
+
+        var mesh = new THREE.Mesh(new THREE.CubeGeometry(1.0, 3.0, 1.0), shader);
+        mesh.flipSided = false;
+        mesh.doubleSided = false;
+
+        var scene = new THREE.Scene();
+        scene.add(mesh);
+
+        var renderTarget = new THREE.WebGLRenderTarget(
+          params.rtSize.width, params.rtSize.height, {
+            minFilter: THREE.LinearFilter,
+            depthBuffer: false,
+            stencilBuffer: false });
+
+        return { scene: scene, shader: shader, renderTarget: renderTarget };
+      })({
+        camera: _camera,
+        rtSize: { width: window.innerWidth/2, height: window.innerHeight/2 },
+        vertexShader: document.getElementById('vertexShader').textContent,
+        fragmentShader: document.getElementById('fragmentShaderPass2').textContent,
+        previousRenderTarget: _pass1.renderTarget,
+        volumeTexture: _volume
+      });
+
+      _pass3 = (function(params) {
+        var mesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(params.rtSize.width, params.rtSize.height),
+          new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            map: params.previousRenderTarget,
+            transparent: true }));
+
+        var scene = new THREE.Scene();
+        scene.add(mesh);
+
+        var camera = new THREE.OrthographicCamera(
+          -params.rtSize.width/2,   params.rtSize.width/2,
+          params.rtSize.height/2, -params.rtSize.height/2,
+          -1, 1);
+        camera.position.z = 1;
+
+        return { scene: scene, camera: camera };
+      })({
+        previousRenderTarget: _pass2.renderTarget,
+        rtSize: { width: window.innerWidth, height: window.innerHeight }
+      });
+    }
+    </script>
+  </body>
+</html>
